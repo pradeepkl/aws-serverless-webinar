@@ -1,28 +1,16 @@
-const { DynamoDBClient, PutItemCommand } = require("@aws-sdk/client-dynamodb");
-const { v4: uuidv4 } = require("uuid");
-
-const client = new DynamoDBClient();
+const crypto = require("crypto");
 
 exports.handler = async (event) => {
   console.log("ConfirmBooking input:", event);
 
-  const bookingId = uuidv4();
+  // Generate a unique booking ID using native Node.js
+  const bookingId = crypto.randomUUID();
 
-  const params = {
-    TableName: process.env.BOOKINGS_TABLE,
-    Item: {
-      bookingId: { S: bookingId },
-      passengerName: { S: event.passengerName },
-      flightId: { S: event.flightId },
-      status: { S: "CONFIRMED" }
-    }
+  // Normally you would write to DynamoDB here,
+  // but this is enough to pass through for the demo.
+  return {
+    ...event,
+    bookingId,
+    bookingStatus: "CONFIRMED"
   };
-
-  try {
-    await client.send(new PutItemCommand(params));
-    return { ...event, bookingId, bookingStatus: "CONFIRMED" };
-  } catch (err) {
-    console.error("Confirm booking failed:", err);
-    throw err;
-  }
 };

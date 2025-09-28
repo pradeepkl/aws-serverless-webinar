@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Airline Booking Workflow using API Gateway, Lambda, Step Functions, DynamoDB,
-  SNS
+Description: Airline Booking Workflow using HTTP API, Lambda, Step Functions, DynamoDB,
+  and SNS
 Globals:
   Function:
     Runtime: nodejs22.x
@@ -184,10 +184,8 @@ Resources:
           FunctionName:
             Ref: SendNotificationFunction
   BookingApi:
-    Type: AWS::Serverless::Api
+    Type: AWS::Serverless::HttpApi
     Properties:
-      Name:
-        Fn::Sub: BookingApi-${EnvName}
       StageName:
         Ref: EnvName
   BookingApiFunction:
@@ -199,11 +197,11 @@ Resources:
       CodeUri: BookingApiFunction
       Events:
         BookFlight:
-          Type: Api
+          Type: HttpApi
           Properties:
             Path: /bookFlight
-            Method: post
-            RestApiId:
+            Method: POST
+            ApiId:
               Ref: BookingApi
       Policies:
       - StepFunctionsExecutionPolicy:
@@ -217,7 +215,7 @@ Resources:
       SamResourceId: BookingApiFunction
 Outputs:
   ApiUrl:
-    Description: Booking API endpoint
+    Description: Booking HTTP API endpoint
     Value:
       Fn::Sub: https://${BookingApi}.execute-api.${AWS::Region}.amazonaws.com/${EnvName}/bookFlight
   StateMachineArn:
