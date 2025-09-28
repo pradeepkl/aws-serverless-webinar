@@ -1,0 +1,230 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Airline Booking Workflow using API Gateway, Lambda, Step Functions, DynamoDB,
+  SNS
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Timeout: 10
+    MemorySize: 128
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedValues:
+    - dev
+    - prod
+Resources:
+  FlightsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName:
+        Fn::Sub: FlightsTable-${EnvName}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: flightId
+        AttributeType: S
+      KeySchema:
+      - AttributeName: flightId
+        KeyType: HASH
+  BookingsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName:
+        Fn::Sub: BookingsTable-${EnvName}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: bookingId
+        AttributeType: S
+      KeySchema:
+      - AttributeName: bookingId
+        KeyType: HASH
+  BookingTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName:
+        Fn::Sub: BookingTopic-${EnvName}
+  CheckAvailabilityFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: CheckAvailability-${EnvName}
+      Handler: checkAvailability.handler
+      CodeUri: CheckAvailabilityFunction
+      Policies:
+      - DynamoDBReadPolicy:
+          TableName:
+            Ref: FlightsTable
+      Environment:
+        Variables:
+          FLIGHTS_TABLE:
+            Ref: FlightsTable
+    Metadata:
+      SamResourceId: CheckAvailabilityFunction
+  ReserveSeatFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: ReserveSeat-${EnvName}
+      Handler: reserveSeat.handler
+      CodeUri: ReserveSeatFunction
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: FlightsTable
+      Environment:
+        Variables:
+          FLIGHTS_TABLE:
+            Ref: FlightsTable
+    Metadata:
+      SamResourceId: ReserveSeatFunction
+  PaymentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: Payment-${EnvName}
+      Handler: payment.handler
+      CodeUri: PaymentFunction
+    Metadata:
+      SamResourceId: PaymentFunction
+  ConfirmBookingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: ConfirmBooking-${EnvName}
+      Handler: confirmBooking.handler
+      CodeUri: ConfirmBookingFunction
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: BookingsTable
+      Environment:
+        Variables:
+          BOOKINGS_TABLE:
+            Ref: BookingsTable
+    Metadata:
+      SamResourceId: ConfirmBookingFunction
+  SendNotificationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: SendNotification-${EnvName}
+      Handler: sendNotification.handler
+      CodeUri: SendNotificationFunction
+      Policies:
+      - SNSPublishMessagePolicy:
+          TopicName:
+            Fn::GetAtt:
+            - BookingTopic
+            - TopicName
+      Environment:
+        Variables:
+          BOOKING_TOPIC:
+            Ref: BookingTopic
+    Metadata:
+      SamResourceId: SendNotificationFunction
+  BookingStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name:
+        Fn::Sub: BookingStateMachine-${EnvName}
+      Definition:
+        Comment: Airline Booking Workflow
+        StartAt: CheckAvailability
+        States:
+          CheckAvailability:
+            Type: Task
+            Resource:
+              Fn::GetAtt:
+              - CheckAvailabilityFunction
+              - Arn
+            Next: ReserveSeat
+          ReserveSeat:
+            Type: Task
+            Resource:
+              Fn::GetAtt:
+              - ReserveSeatFunction
+              - Arn
+            Next: ProcessPayment
+          ProcessPayment:
+            Type: Task
+            Resource:
+              Fn::GetAtt:
+              - PaymentFunction
+              - Arn
+            Next: ConfirmBooking
+          ConfirmBooking:
+            Type: Task
+            Resource:
+              Fn::GetAtt:
+              - ConfirmBookingFunction
+              - Arn
+            Next: SendNotification
+          SendNotification:
+            Type: Task
+            Resource:
+              Fn::GetAtt:
+              - SendNotificationFunction
+              - Arn
+            End: true
+      Policies:
+      - LambdaInvokePolicy:
+          FunctionName:
+            Ref: CheckAvailabilityFunction
+      - LambdaInvokePolicy:
+          FunctionName:
+            Ref: ReserveSeatFunction
+      - LambdaInvokePolicy:
+          FunctionName:
+            Ref: PaymentFunction
+      - LambdaInvokePolicy:
+          FunctionName:
+            Ref: ConfirmBookingFunction
+      - LambdaInvokePolicy:
+          FunctionName:
+            Ref: SendNotificationFunction
+  BookingApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name:
+        Fn::Sub: BookingApi-${EnvName}
+      StageName:
+        Ref: EnvName
+  BookingApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: BookingApiHandler-${EnvName}
+      Handler: apiHandler.handler
+      CodeUri: BookingApiFunction
+      Events:
+        BookFlight:
+          Type: Api
+          Properties:
+            Path: /bookFlight
+            Method: post
+            RestApiId:
+              Ref: BookingApi
+      Policies:
+      - StepFunctionsExecutionPolicy:
+          StateMachineName:
+            Ref: BookingStateMachine
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN:
+            Ref: BookingStateMachine
+    Metadata:
+      SamResourceId: BookingApiFunction
+Outputs:
+  ApiUrl:
+    Description: Booking API endpoint
+    Value:
+      Fn::Sub: https://${BookingApi}.execute-api.${AWS::Region}.amazonaws.com/${EnvName}/bookFlight
+  StateMachineArn:
+    Description: Step Functions ARN
+    Value:
+      Ref: BookingStateMachine
+  SnsTopicArn:
+    Description: SNS Topic ARN
+    Value:
+      Ref: BookingTopic

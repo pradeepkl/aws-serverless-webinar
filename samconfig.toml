@@ -1,0 +1,17 @@
+version = 0.1
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.deploy.parameters]
+stack_name = "airline-booking-dev"
+s3_prefix = "airline-booking"
+region = "ap-south-1"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+resolve_s3 = true
+image_repositories = []
+parameter_overrides = [
+  "EnvName=dev"
+]

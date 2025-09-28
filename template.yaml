@@ -1,0 +1,204 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Airline Booking Workflow using API Gateway, Lambda, Step Functions, DynamoDB, SNS
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Timeout: 10
+    MemorySize: 128
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+
+Resources:
+
+  ###################################
+  # DynamoDB Tables
+  ###################################
+
+  FlightsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "FlightsTable-${EnvName}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: flightId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: flightId
+          KeyType: HASH
+
+  BookingsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "BookingsTable-${EnvName}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: bookingId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: bookingId
+          KeyType: HASH
+
+  ###################################
+  # SNS Topic
+  ###################################
+
+  BookingTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "BookingTopic-${EnvName}"
+
+  ###################################
+  # Lambda Functions
+  ###################################
+
+  CheckAvailabilityFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "CheckAvailability-${EnvName}"
+      Handler: checkAvailability.handler
+      CodeUri: src/
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref FlightsTable
+      Environment:
+        Variables:
+          FLIGHTS_TABLE: !Ref FlightsTable
+
+  ReserveSeatFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "ReserveSeat-${EnvName}"
+      Handler: reserveSeat.handler
+      CodeUri: src/
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FlightsTable
+      Environment:
+        Variables:
+          FLIGHTS_TABLE: !Ref FlightsTable
+
+  PaymentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "Payment-${EnvName}"
+      Handler: payment.handler
+      CodeUri: src/
+
+  ConfirmBookingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "ConfirmBooking-${EnvName}"
+      Handler: confirmBooking.handler
+      CodeUri: src/
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref BookingsTable
+      Environment:
+        Variables:
+          BOOKINGS_TABLE: !Ref BookingsTable
+
+  SendNotificationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "SendNotification-${EnvName}"
+      Handler: sendNotification.handler
+      CodeUri: src/
+      Policies:
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt BookingTopic.TopicName
+      Environment:
+        Variables:
+          BOOKING_TOPIC: !Ref BookingTopic
+
+  ###################################
+  # Step Functions State Machine
+  ###################################
+
+  BookingStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub "BookingStateMachine-${EnvName}"
+      Definition:
+        Comment: "Airline Booking Workflow"
+        StartAt: CheckAvailability
+        States:
+          CheckAvailability:
+            Type: Task
+            Resource: !GetAtt CheckAvailabilityFunction.Arn
+            Next: ReserveSeat
+          ReserveSeat:
+            Type: Task
+            Resource: !GetAtt ReserveSeatFunction.Arn
+            Next: ProcessPayment
+          ProcessPayment:
+            Type: Task
+            Resource: !GetAtt PaymentFunction.Arn
+            Next: ConfirmBooking
+          ConfirmBooking:
+            Type: Task
+            Resource: !GetAtt ConfirmBookingFunction.Arn
+            Next: SendNotification
+          SendNotification:
+            Type: Task
+            Resource: !GetAtt SendNotificationFunction.Arn
+            End: true
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref CheckAvailabilityFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ReserveSeatFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref PaymentFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ConfirmBookingFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref SendNotificationFunction
+
+  ###################################
+  # API Gateway
+  ###################################
+
+  BookingApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "BookingApi-${EnvName}"
+      StageName: !Ref EnvName
+
+  BookingApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "BookingApiHandler-${EnvName}"
+      Handler: apiHandler.handler
+      CodeUri: src/
+      Events:
+        BookFlight:
+          Type: Api
+          Properties:
+            Path: /bookFlight
+            Method: post
+            RestApiId: !Ref BookingApi
+      Policies:
+        - StepFunctionsExecutionPolicy:
+            StateMachineName: !Ref BookingStateMachine
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref BookingStateMachine
+
+Outputs:
+  ApiUrl:
+    Description: "Booking API endpoint"
+    Value: !Sub "https://${BookingApi}.execute-api.${AWS::Region}.amazonaws.com/${EnvName}/bookFlight"
+
+  StateMachineArn:
+    Description: "Step Functions ARN"
+    Value: !Ref BookingStateMachine
+
+  SnsTopicArn:
+    Description: "SNS Topic ARN"
+    Value: !Ref BookingTopic
